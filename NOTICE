@@ -1,0 +1,20 @@
+partcad-collection-openusd-disney-moana
+=======================================
+
+This PartCAD package serves the Moana Island Scene as PartCAD parts.
+
+The code in this repository (the `moana_repo.py` repository plugin, the shared
+`usd_assets.py`, the PartCAD configuration and the tests) is:
+
+    Copyright 2026 PartCAD
+    Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+No asset is included in this repository. The assets, their layers and their
+textures are fetched on demand from https://datasets.disneyanimation.com,
+and remain Disney Enterprises, Inc.'s, under the License for Moana Island Scene
+(https://media.disneyanimation.com/uploads/production/data_set_asset/4/asset/License.txt):
+for research and software development only. Nothing is fetched until the user
+has allowed the plugin to read the archive.
+
+Moana is a trademark of Disney Enterprises, Inc. This package is not
+affiliated with or endorsed by Disney; the scene is the Moana Island Scene.

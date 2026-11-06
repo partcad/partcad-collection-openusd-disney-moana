@@ -1,0 +1,78 @@
+# PartCAD package: the Moana Island Scene as parts, served by a repository plugin.
+#
+# Published as //pub/collection/openusd/disney-moana/assets: this package is
+# //pub/collection/openusd/disney-moana, and its one external dependency 'assets' is served
+# by the moana_repo plugin - Walt Disney Animation Studios' Moana Island
+# Scene: the island, and a part per element of it,
+# each 'type: usd', built by PartCAD's own part type of that name.
+name: //pub/collection/openusd/disney-moana
+
+desc: |
+  Walt Disney Animation Studios' Moana Island Scene
+  (https://www.disneyanimation.com/resources/moana-island-scene/) as PartCAD
+  parts: the island, and each of its 20 elements. No geometry is vendored, and
+  none is fetched until you allow the plugin to read the scene's 15 GB archive,
+  once (see the README). The scene is licensed for research and software
+  development only.
+url: https://www.disneyanimation.com/resources/moana-island-scene/
+
+# The first release whose //builtin has the 'usd' part type every part here
+# is.
+partcad: ">=0.9.6"
+
+# Made to be looked at, rendered or simulated: nothing in them says they are
+# made to be manufactured. The plugin says the same of 'assets'.
+manufacturable: false
+
+docs:
+  name: The Moana Island Scene for PartCAD
+  usage: |
+    ```shell
+    pc list parts //pub/collection/openusd/disney-moana/assets
+    pc search parts -P //pub/collection/openusd/disney-moana/assets -k palm
+    pc inspect //pub/collection/openusd/disney-moana/assets:isLavaRocks
+    ```
+
+dependencies:
+  assets:
+    type: external
+    plugin: :moana_repo
+    desc: The Moana Island Scene, a part per element.
+
+repositories:
+  moana_repo:
+    type: basic
+    path: moana_repo.py
+    desc: Serves the Moana Island Scene's elements as 'usd' parts.
+    # Every parameter here is yours to change without touching this package,
+    # in your own ~/.partcad/config.yaml, under 'parameters', by the plugin's
+    # name ('//pub/collection/openusd/disney-moana:moana_repo'), or - all but what says it is
+    # yours alone - in a package of your own, with an enrich of the plugin
+    # (see the README).
+    parameters:
+      download:
+        type: bool
+        default: false
+        desc: >-
+          Whether the plugin may stream the Moana Island Scene's 15 GB USD
+          archive, once, keeping its USD layers (3.2 GB) in its cache: a tar
+          archive cannot be read in pieces, so building any part of it reads
+          all of it. Nothing is fetched until it may. The scene is licensed
+          for research and software development only. Set it in your own
+          ~/.partcad/config.yaml; never in a package.
+      textures:
+        type: bool
+        default: false
+        desc: >-
+          Whether a part's USDZ carries the textures its layers name; the
+          archive's Ptex textures are not kept, so this changes nothing here. PartCAD
+          builds a part from its geometry, so they are left out unless you
+          want the package complete - to open it in another USD application,
+          say.
+      max_size_mb:
+        type: float
+        default: 512
+        desc: >-
+          The most a part's USDZ may be, in MB: it crosses to PartCAD in one
+          answer. An asset found to be larger is refused, saying so, before
+          the rest of it is fetched.
