@@ -152,6 +152,11 @@ def test_what_an_asset_names_and_the_source_lacks_is_reported():
     assert missing == [("a.usda", "./gone.usda")]
 
 
+def test_omniverse_s_own_mdl_library_is_no_file_an_asset_lacks():
+    store = _store({"a.usda": b"#usda 1.0\ndef Shader \"s\" { uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@ }\n"})
+    assert ua.closure("a.usda", store.read, store.exists, textures=ua.is_look)[1] == []
+
+
 # --- USDZ ------------------------------------------------------------------------
 
 
@@ -581,6 +586,63 @@ def test_textures_change_the_file_a_part_names():
     source = _source({"textures": "true"})
     assert source.get("set/objects/part/Cup")["path"] == "Cup.textured.usdz"
     assert base64.b64decode(source.get("set/files/Cup.textured.usdz"))
+
+
+def test_a_look_is_a_shader_or_an_image_of_a_colour_or_a_finish():
+    for path in ("tex/wood_base_color.jpg", "T_Pallet_A1_Albedo.png", "textures/global-colors/blue.jpg",
+                 "T_Pallet_A1_ORM.png", "bishop_black_roughness.jpg", "materials/Aluminium_Brushed_A.mdl",
+                 "Bishop_mat.mtlx", "texture/mug_1_albedo.dds", "jar/decor_jar01_role_preview_texture.jpg"):  # fmt: skip
+        assert ua.is_look(path), path
+    for path in ("T_Pallet_A1_Normal.png", "tex/bishop_black_normal.jpg", "thumbnails/Bishop.png", "cards/X_XPos.png",
+                 "fragment/tex/jar/albedo.exr", "Leaf_Opacity.png", "rock_height.tif", "glow_emissive.png",
+                 "jar_preview/cards_textures_X_pos.png", "jar/decor_jar01_opacity_role_preview_texture.jpg",
+                 "shaders/look.osl", "PaintMask.png", "wood_AO.png"):  # fmt: skip
+        assert not ua.is_look(path), path
+
+
+LOOKED = {
+    "assets/Cup/Cup.usda": b"#usda 1.0\n"
+    b'def "Cup" ( references = @./geom.usda@ ) {\n'
+    b"  asset inputs:a = @./tex/cup_albedo.png@\n"
+    b"  asset inputs:n = @./tex/cup_normal.png@\n"
+    b"  asset inputs:b = @./tex/huge_basecolor.png@\n"
+    b"  asset inputs:c = @./tex/T_Glaze_Albedo.png@\n"
+    b"  asset info:mdl:sourceAsset = @./materials/Glaze.mdl@\n"
+    b"}\n",
+    "assets/Cup/geom.usda": b"#usda 1.0\n",
+    "assets/Cup/tex/cup_albedo.png": b"albedo",
+    "assets/Cup/tex/cup_normal.png": b"normal",
+    "assets/Cup/tex/huge_basecolor.png": b"h" * 2000,
+    "assets/Cup/tex/T_Glaze_Albedo.png": b"g" * 2000,
+    "assets/Cup/tex/.thumbs/256x256/T_Glaze_Albedo.png.auto.png": b"small",
+    "assets/Cup/materials/Glaze.mdl": b'mdl 1.4;\nexport material Glaze(*) = OmniPBR(ORM_texture: texture_2d("../tex/cup_orm.png"));\n',
+    "assets/Cup/tex/cup_orm.png": b"orm",
+    "assets/Ball.usdz": ua.write_usdz([("Ball.usda", b"#usda 1.0\n")]),
+}
+
+
+def test_a_part_carries_what_its_look_is_read_from_a_smaller_copy_where_there_is_one(monkeypatch):
+    monkeypatch.setattr(ua, "LOOK_MAX_MB", 1000 / (1 << 20))
+    source = Source(ua.MemoryStore(LOOKED))
+    assert source.get("set/objects/part/Cup")["path"] == "Cup.usdz"
+    with zipfile.ZipFile(io.BytesIO(base64.b64decode(source.get("set/files/Cup.usdz")))) as z:
+        assert sorted(z.namelist()) == sorted(
+            ["Cup.usda", "geom.usda", "tex/cup_albedo.png", "tex/T_Glaze_Albedo.png", "materials/Glaze.mdl",
+             "tex/cup_orm.png"]  # fmt: skip
+        )
+        # The thumbnail the source keeps stands in for the image, under the image's name.
+        assert z.read("tex/T_Glaze_Albedo.png") == b"small"
+
+
+def test_a_part_without_its_look_names_another_file_and_carries_none():
+    source = Source(ua.MemoryStore(LOOKED), {"looks": "false"})
+    assert source.get("set/objects/part/Cup")["path"] == "Cup.bare.usdz"
+    with zipfile.ZipFile(io.BytesIO(base64.b64decode(source.get("set/files/Cup.bare.usdz")))) as z:
+        assert z.namelist() == ["Cup.usda", "geom.usda"]
+    textured = Source(ua.MemoryStore(LOOKED), {"textures": "true"})
+    with zipfile.ZipFile(io.BytesIO(base64.b64decode(textured.get("set/files/Cup.textured.usdz")))) as z:
+        # Every texture, each as it is.
+        assert z.read("tex/T_Glaze_Albedo.png") == b"g" * 2000 and "tex/cup_normal.png" in z.namelist()
 
 
 def test_an_asset_larger_than_allowed_is_refused_before_its_layers_are_read(capsys):

@@ -64,19 +64,28 @@ nowhere else. The plugin's part is the file, and the part type makes the shape o
   `.usdc` layers is a root layer that names others by relative path - sublayers, references,
   payloads - and the plugin follows those names (in a text layer its `@asset paths@`, in a binary one
   its token table) and packs the root and everything it reaches into a USDZ, root first, as the format
-  wants it. Textures are left out unless the plugin's `textures` says otherwise: PartCAD builds
-  geometry. A file an asset names that the source does not have is reported, and the asset is served
-  without it.
+  wants it. Of the files that are not layers, it carries what the part's look is read from (the
+  plugin's `looks`): the shaders the layers name, and the images of the colour, roughness and
+  metalness - a smaller copy of each where the source keeps one, else each of up to 8 MB - and not
+  the normal, height or occlusion maps. `textures` carries every one, as it is. A file an asset names
+  that the source does not have is reported, and the asset is served without it.
 - **The shape.** What is built is the stage's default prim - what a reference to the asset brings
   in - and every mesh it shows: through native instancing and point instancers, of the purpose asked
   for, visible ones only, in millimetres (by the stage's `metersPerUnit`) with Z up. A cube, sphere,
   cylinder, cone or capsule is meshed; curves, points and volumes are not surfaces, and are left out
   and counted. Up to 20 000 triangles, each triangle is a face, and two that share an edge share it:
   the part is drawn as lines, written to STEP, and made the solid it bounds where it closes. Past
-  that, the triangles of each colour are one mesh: fast at any size, drawn shaded (`pc render --style
-  shaded`) and written as STL, 3MF or glTF, but with no edges for a line drawing. Each face is drawn in
-  the colour its material's `diffuseColor`, or else its `displayColor`, gives. The part is a surface
-  as USD describes it - what a renderer draws - and PartCAD says so when it is not a solid.
+  that, the triangles of each look are one mesh: fast at any size, drawn shaded (`pc render --style
+  shaded`) and written as STL, 3MF or glTF, but with no edges for a line drawing. The part is a
+  surface as USD describes it - what a renderer draws - and PartCAD says so when it is not a solid.
+- **The look.** Each face is in the colour, roughness and metalness its material says - the material
+  bound to its mesh, or to the subset of its faces - and as see-through: a colour a texture gives is
+  read off the image where the face lies on it. `UsdPreviewSurface`, MaterialX and NVIDIA's OmniPBR,
+  OmniGlass and OmniSurface are read, an MDL preset calling one included; a face with no material, or
+  none of those, is in its `displayColor`. Each is stated under PartCAD's `usd` convention by the
+  material's name, so a package of yours can claim one with a colour, material or finish of its own
+  (`ids: {usd: Ceramic}`); one nothing claims is drawn as the stage says, and is display-only. A shaded
+  `pc render` draws the roughness and metalness too.
 - **The size.** It is what the asset says it is, by its `metersPerUnit`: an asset authored in the
   wrong units comes out as large, or as small, as it says.
 - **The other reader.** `reader=cadmpeg` reads the same file with cadmpeg instead, PartCAD's

@@ -65,10 +65,7 @@ repositories:
         default: false
         desc: >-
           Whether a part's USDZ carries the textures its layers name; the
-          archive's Ptex textures are not kept, so this changes nothing here. PartCAD
-          builds a part from its geometry, so they are left out unless you
-          want the package complete - to open it in another USD application,
-          say.
+          archive's Ptex textures are not kept, so this changes nothing here.
       max_size_mb:
         type: float
         default: 512
