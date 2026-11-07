@@ -43,6 +43,20 @@ parameters:
 
 Until then, the elements are listed - from the index - and nothing is fetched.
 
+**Give the first read time.** PartCAD waits 180 seconds for each answer from a plugin, and reading is
+done inside one: an element of a few MB is read well within it, but `isCoral`, `isMountainB` or
+`isBeach` (300 to 550 MB), or the whole archive where the index does not match, takes longer on most
+connections, and an answer cut off is read again from the start. Raise it before the first build of
+one of those, in the same `~/.partcad/config.yaml`:
+
+```yaml
+plugin:
+  query:
+    timeout: 3600
+```
+
+or as `PC_PLUGIN_QUERY_TIMEOUT=3600` for one command. What was read is kept, so later builds need none of it.
+
 **Disney's licence.** The scene is under its own [licence](https://media.disneyanimation.com/uploads/production/data_set_asset/4/asset/License.txt):
 for research and software development, benchmarking included, and nothing else; its notice is kept,
 and the scene is called the "Moana Island Scene" and nothing else. Read it before you set `download`.
