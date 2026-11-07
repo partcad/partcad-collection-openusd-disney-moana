@@ -57,7 +57,7 @@ for research and software development only.
 **Nothing here is manufacturable.** It is a scene made to be rendered; the package says
 `manufacturable: false`, and so does the plugin of what it serves.
 
-Requires PartCAD 0.9.6 or newer: the first release whose `//builtin` has the `usd` part type.
+Requires PartCAD 0.9.11 or newer: the first release whose `//builtin` has the `usd` part type.
 
 ## Listing, searching, building
 
