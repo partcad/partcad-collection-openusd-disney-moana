@@ -107,11 +107,42 @@ def is_texture(path):
 # part type reads each face's colour off them (see the README).
 LOOK_SHADERS = ("mdl", "mtlx")
 LOOK_IMAGES = ("png", "jpg", "jpeg", "bmp", "tga", "tif", "tiff", "dds")
-_NOT_LOOK = re.compile(
-    r"(?:^|[^a-z])(?:normals?|nrm|bump|heights?|disp|displacement|ao|cavity|curvature|emissive|emission|opacity|"
-    r"alpha|mask|thumbs?|thumbnails?|cards?|screenshots?|icons?)(?:[^a-z]|$)",
-    re.IGNORECASE,
-)
+# What an image is of is the word its name ends in ('wood_normal'), before what
+# says only how it was made ('_2k', '_gl', '.1001', ALab's '_proxy_role_preview_texture');
+# a picture of the asset rather than of a surface may say so first instead
+# ('thumb_chair', 'cards_textures_X_pos'), or by being in a folder of them
+# ('.thumbs/', 'cards/'), and a map may be called one anywhere ('normal_map'). A
+# word anywhere else is the name of something - the asset, a folder of a
+# release - and says nothing: 'decor_thumb_tack01', 'alpha_release/'.
+_MAPS = {"normal", "normals", "nrm", "bump", "height", "heights", "disp", "displacement", "ao", "cavity", "curvature",
+         "emissive", "emission", "opacity", "alpha", "mask"}  # fmt: skip
+_PICTURES = {"thumb", "thumbs", "thumbnail", "thumbnails", "card", "cards", "screenshot", "screenshots", "icon",
+             "icons"}  # fmt: skip
+_HOW_MADE = re.compile(r"\d+(?:k|px|x\d+)?|udim|gl|dx|ogl|opengl|directx|proxy|role|preview|texture|tex|map")
+
+
+def _words(name):
+    """The words of a file or folder name, in order and lowercase: 'T_Glaze_BaseColor' is t, glaze, base, color."""
+    words = re.split(r"[^a-z0-9]+", re.sub(r"([a-z])([A-Z])", r"\1_\2", name).lower())
+    return [w for w in words if w]
+
+
+def _of_something_else(name, folder=False):
+    """Whether a file name (without its extension), or a folder's, says it is not of a colour or a finish."""
+    words = _words(name)
+    if not words:
+        return False
+    if re.sub(r"\d+$", "", words[0]) in _PICTURES:
+        return True
+    if folder:
+        return re.sub(r"\d+$", "", words[-1]) in _PICTURES
+    if any(word in _MAPS and following == "map" for word, following in zip(words, words[1:])):
+        return True  # 'r_normal_map_reversed_y'
+    while words and _HOW_MADE.fullmatch(words[-1]):
+        words.pop()
+    return bool(words) and re.sub(r"\d+$", "", words[-1]) in _MAPS | _PICTURES
+
+
 # The most a look image may be, in MB, where the source keeps no smaller copy of
 # it (see 'Store.stand_in'): a texture is read for a colour per face, and an
 # image of tens of megabytes says no more of that than a small one.
@@ -128,7 +159,12 @@ def is_look(path):
     ext = extension_of(path)
     if ext in LOOK_SHADERS:
         return True
-    return ext in LOOK_IMAGES and not _NOT_LOOK.search(re.sub(r"([a-z])([A-Z])", r"\1_\2", path))
+    if ext not in LOOK_IMAGES:
+        return False
+    *folders, name = path.split("/")
+    if any(_of_something_else(folder, folder=True) for folder in folders):
+        return False
+    return not _of_something_else(name[: -len(ext) - 1])
 
 
 # --- LZ4, the way a binary USD layer compresses its tokens --------------------
@@ -351,7 +387,8 @@ def closure(root, read, exists, textures=True, prefetch=None, size=None, limit=N
                 if found is None:
                     continue
                 if not found:
-                    if wanted(written.split("[", 1)[0]) and not _CORE_MDL.match(written.strip()):
+                    # Told by the file it would be ('./normal/../tex/wood.png' is 'tex/wood.png').
+                    if wanted(posixpath.normpath(written.split("[", 1)[0])) and not _CORE_MDL.match(written.strip()):
                         missing.append((path, written))
                     continue
                 for f in found:
@@ -1387,11 +1424,15 @@ class Source:
             "searchKinds": kinds,
         }
 
-    def file_name(self, asset):
-        """The name of an asset's USDZ: another for each set of files it can be made of, so none is taken for another."""
+    def variant(self):
+        """What an asset's USDZ is named with after its id: another for each set of files it can be made of."""
         if self.flag("textures"):
-            return "%s.textured.usdz" % asset.id
-        return "%s%s.usdz" % (asset.id, "" if self.flag("looks", True) else ".bare")
+            return ".textured"
+        return "" if self.flag("looks", True) else ".bare"
+
+    def file_name(self, asset):
+        """The name of an asset's USDZ, so that none is taken for another made of other files."""
+        return "%s%s.usdz" % (asset.id, self.variant())
 
     def part_config(self, asset):
         config = {
@@ -1433,11 +1474,14 @@ class Source:
         def look(path):
             if not is_look(path):
                 return False
+            if extension_of(path) in LOOK_SHADERS or not asset.store.exists(path):
+                # A missing one is reported as missing, with no copy of it to look for.
+                return True
             smaller = asset.store.stand_in(path)
             if smaller is not None:
                 stand_ins[path] = smaller
                 return True
-            return extension_of(path) in LOOK_SHADERS or asset.store.size(path) <= LOOK_MAX_MB * (1 << 20)
+            return asset.store.size(path) <= LOOK_MAX_MB * (1 << 20)
 
         carried = True if textures else (look if self.flag("looks", True) else False)
 
@@ -1525,11 +1569,13 @@ class Source:
         return {asset.id: self.part_config(asset) for _, _, asset in ranked[:limit]}
 
     def file(self, collection, path):
-        stem = path[: -len(".usdz")] if path.endswith(".usdz") else None
-        if stem is None:
+        if not path.endswith(".usdz"):
             return None
-        for variant in (".textured", ".bare"):
-            stem = stem[: -len(variant)] if stem.endswith(variant) else stem
+        # Only the ending 'file_name' gave it: an asset whose own id ends in
+        # '.bare' or '.textured' is still that asset.
+        stem, variant = path[: -len(".usdz")], self.variant()
+        if variant and stem.endswith(variant):
+            stem = stem[: -len(variant)]
         asset = self._assets(collection or "").get(stem)
         if asset is None:
             raise NotFound("%s: no asset %s" % (self.NAME, stem))

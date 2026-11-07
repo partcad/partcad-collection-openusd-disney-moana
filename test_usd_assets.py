@@ -591,12 +591,23 @@ def test_textures_change_the_file_a_part_names():
 def test_a_look_is_a_shader_or_an_image_of_a_colour_or_a_finish():
     for path in ("tex/wood_base_color.jpg", "T_Pallet_A1_Albedo.png", "textures/global-colors/blue.jpg",
                  "T_Pallet_A1_ORM.png", "bishop_black_roughness.jpg", "materials/Aluminium_Brushed_A.mdl",
-                 "Bishop_mat.mtlx", "texture/mug_1_albedo.dds", "jar/decor_jar01_role_preview_texture.jpg"):  # fmt: skip
+                 "Bishop_mat.mtlx", "texture/mug_1_albedo.dds", "jar/decor_jar01_role_preview_texture.jpg",
+                 # A word that names something, not what the image is of: ALab's thumb tack, a release's
+                 # folder, a folder of masks, an image of a colour with an alpha.
+                 "look/surfacing/decor_thumb_tack01/texture/decor_thumb_tack01_role_preview_texture.jpg",
+                 "look/surfacing/decor_thumb_tack01/texture/decor_thumb_tack01_proxy_role_preview_texture.jpg",
+                 "alpha_release/tex/wood_albedo.png", "normal/blue_albedo.png", "assets/Mask/tex/wood_base_color.png",
+                 "alpha_albedo.png", "wood_albedo.1001.png", "1001.png",
+                 "AlphaBlendModeTest/0/AlphaBlendModeTest_image0_e93a912e.png"):  # fmt: skip
         assert ua.is_look(path), path
     for path in ("T_Pallet_A1_Normal.png", "tex/bishop_black_normal.jpg", "thumbnails/Bishop.png", "cards/X_XPos.png",
                  "fragment/tex/jar/albedo.exr", "Leaf_Opacity.png", "rock_height.tif", "glow_emissive.png",
                  "jar_preview/cards_textures_X_pos.png", "jar/decor_jar01_opacity_role_preview_texture.jpg",
-                 "shaders/look.osl", "PaintMask.png", "wood_AO.png"):  # fmt: skip
+                 "shaders/look.osl", "PaintMask.png", "wood_AO.png", "tex/.thumbs/256x256/wood.png.auto.png",
+                 "rock_normal_gl_2k.png", "wood_normal.<UDIM>.png", "Wood_Normal_Map.png", "chair_thumb.jpg",
+                 "thumb_chair.jpg", "Screenshots/chair.png", "rock_disp2.png",
+                 "stoat_body01/stoat_body01_opacity_proxy_role_preview_texture.jpg",
+                 "NormalsTextureBiasAndScale/r_normal_map_reversed_y.png"):  # fmt: skip
         assert not ua.is_look(path), path
 
 
@@ -643,6 +654,41 @@ def test_a_part_without_its_look_names_another_file_and_carries_none():
     with zipfile.ZipFile(io.BytesIO(base64.b64decode(textured.get("set/files/Cup.textured.usdz")))) as z:
         # Every texture, each as it is.
         assert z.read("tex/T_Glaze_Albedo.png") == b"g" * 2000 and "tex/cup_normal.png" in z.namelist()
+
+
+def test_a_missing_look_is_reported_by_the_file_it_would_be_and_no_copy_of_it_is_looked_for(capsys):
+    asked = []
+
+    class Store(ua.MemoryStore):
+        def stand_in(self, path):
+            asked.append(path)
+            return super().stand_in(path)
+
+    files = dict(LOOKED)
+    files["assets/Cup/Cup.usda"] += b'def "Gone" { asset inputs:a = @./thumbs/../tex/gone_albedo.png@ }\n'
+    source = Source(Store(files))
+    assert source.get("set/files/Cup.usdz")
+    assert "./thumbs/../tex/gone_albedo.png (in assets/Cup/Cup.usda)" in capsys.readouterr().err
+    assert asked and not [path for path in asked if "gone" in path]
+
+
+def test_an_asset_whose_id_ends_like_a_variant_is_still_that_asset():
+    class Twins(Source):
+        def assets(self, collection):
+            return {
+                "Cup": ua.Asset("Cup", self.store, "assets/Cup/Cup.usda"),
+                "Cup.bare": ua.Asset("Cup.bare", self.store, "assets/Ball.usdz"),
+            }
+
+    ball = LOOKED["assets/Ball.usdz"]
+    for parameters, name in (({}, "Cup.bare.usdz"), ({"looks": "false"}, "Cup.bare.bare.usdz"),
+                             ({"textures": "true"}, "Cup.bare.textured.usdz")):  # fmt: skip
+        source = Twins(ua.MemoryStore(LOOKED), parameters)
+        assert source.get("set/objects/part/Cup.bare")["path"] == name
+        assert base64.b64decode(source.get("set/files/" + name)) == ball, name
+    # A name made with other parameters is no asset's here, rather than another file served under it.
+    with pytest.raises(ua.NotFound):
+        Twins(ua.MemoryStore(LOOKED)).file("set", "Cup.textured.usdz")
 
 
 def test_an_asset_larger_than_allowed_is_refused_before_its_layers_are_read(capsys):
