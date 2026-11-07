@@ -99,6 +99,74 @@ def is_texture(path):
     return extension_of(path) in TEXTURE_EXTENSIONS
 
 
+# The files a part's look is read from: the shaders a layer names (an MDL preset
+# or a MaterialX document says which textures, and how), and the images a colour, a roughness or a
+# metalness is read off - every image Pillow reads, but those whose name says
+# they are of something else: the surface's normals or height, its occlusion,
+# what it emits, its cut-outs, or a thumbnail of the asset. PartCAD's 'usd'
+# part type reads each face's colour off them (see the README).
+LOOK_SHADERS = ("mdl", "mtlx")
+LOOK_IMAGES = ("png", "jpg", "jpeg", "bmp", "tga", "tif", "tiff", "dds")
+# What an image is of is the word its name ends in ('wood_normal'), before what
+# says only how it was made ('_2k', '_gl', '.1001', ALab's '_proxy_role_preview_texture');
+# a picture of the asset rather than of a surface may say so first instead
+# ('thumb_chair', 'cards_textures_X_pos'), or by being in a folder of them
+# ('.thumbs/', 'cards/'), and a map may be called one anywhere ('normal_map'). A
+# word anywhere else is the name of something - the asset, a folder of a
+# release - and says nothing: 'decor_thumb_tack01', 'alpha_release/'.
+_MAPS = {"normal", "normals", "nrm", "bump", "height", "heights", "disp", "displacement", "ao", "cavity", "curvature",
+         "emissive", "emission", "opacity", "alpha", "mask"}  # fmt: skip
+_PICTURES = {"thumb", "thumbs", "thumbnail", "thumbnails", "card", "cards", "screenshot", "screenshots", "icon",
+             "icons"}  # fmt: skip
+_HOW_MADE = re.compile(r"\d+(?:k|px|x\d+)?|udim|gl|dx|ogl|opengl|directx|proxy|role|preview|texture|tex|map")
+
+
+def _words(name):
+    """The words of a file or folder name, in order and lowercase: 'T_Glaze_BaseColor' is t, glaze, base, color."""
+    words = re.split(r"[^a-z0-9]+", re.sub(r"([a-z])([A-Z])", r"\1_\2", name).lower())
+    return [w for w in words if w]
+
+
+def _of_something_else(name, folder=False):
+    """Whether a file name (without its extension), or a folder's, says it is not of a colour or a finish."""
+    words = _words(name)
+    if not words:
+        return False
+    if re.sub(r"\d+$", "", words[0]) in _PICTURES:
+        return True
+    if folder:
+        return re.sub(r"\d+$", "", words[-1]) in _PICTURES
+    if any(word in _MAPS and following == "map" for word, following in zip(words, words[1:])):
+        return True  # 'r_normal_map_reversed_y'
+    while words and _HOW_MADE.fullmatch(words[-1]):
+        words.pop()
+    return bool(words) and re.sub(r"\d+$", "", words[-1]) in _MAPS | _PICTURES
+
+
+# The most a look image may be, in MB, where the source keeps no smaller copy of
+# it (see 'Store.stand_in'): a texture is read for a colour per face, and an
+# image of tens of megabytes says no more of that than a small one.
+LOOK_MAX_MB = 8
+
+
+# The MDL modules of Omniverse's own library, which a renderer has and no
+# source serves: a layer naming one is naming no file of the asset's.
+_CORE_MDL = re.compile(r"^(?:.*/)?(?:Omni\w*|nvidia/\w+|core_definitions)\.mdl$")
+
+
+def is_look(path):
+    """Whether the file at 'path' is one a part's look is read from: a shader, or an image of its colour or finish."""
+    ext = extension_of(path)
+    if ext in LOOK_SHADERS:
+        return True
+    if ext not in LOOK_IMAGES:
+        return False
+    *folders, name = path.split("/")
+    if any(_of_something_else(folder, folder=True) for folder in folders):
+        return False
+    return not _of_something_else(name[: -len(ext) - 1])
+
+
 # --- LZ4, the way a binary USD layer compresses its tokens --------------------
 
 
@@ -285,6 +353,10 @@ def closure(root, read, exists, textures=True, prefetch=None, size=None, limit=N
     tree has it (for a pattern, the paths that match). 'missing' is
     [(file, written)] for every path an asset names that is not in the tree.
 
+    'textures' says which of the files that are not layers - textures, shaders
+    - are carried: every one (True), none (False), or those a function of
+    their path says (a part's look, see 'is_look').
+
     The files are found a generation at a time - what the root names, then what
     those name - and 'prefetch(paths)', when given, is handed each generation's
     layers before they are read, so that a remote store can fetch them at once.
@@ -305,17 +377,22 @@ def closure(root, read, exists, textures=True, prefetch=None, size=None, limit=N
         if prefetch is not None and len(layers) > 1:
             prefetch(layers)
         following = []
+
+        def wanted(f):
+            return not is_texture(f) or (textures(f) if callable(textures) else bool(textures))
+
         for path in layers:
             for written in named_paths(path, read(path)):
                 found = resolve(path, written, exists)
                 if found is None:
                     continue
                 if not found:
-                    if textures or not is_texture(written.split("[", 1)[0]):
+                    # Told by the file it would be ('./normal/../tex/wood.png' is 'tex/wood.png').
+                    if wanted(posixpath.normpath(written.split("[", 1)[0])) and not _CORE_MDL.match(written.strip()):
                         missing.append((path, written))
                     continue
                 for f in found:
-                    if f in seen or (is_texture(f) and not textures):
+                    if f in seen or not wanted(f):
                         continue
                     seen.add(f)
                     following.append(f)
@@ -676,6 +753,23 @@ class Store:
         if isinstance(path_or_pattern, str):
             return path_or_pattern in listing
         return sorted(p for p in listing if path_or_pattern.match(p))
+
+    def stand_in(self, path):
+        """A smaller copy of the image at 'path' the tree keeps beside it, or None.
+
+        NVIDIA's Omniverse keeps a 256-pixel picture of every file it serves,
+        textures included, at '.thumbs/256x256/<name>.png' (or '.auto.png')
+        beside it: a texture of 28 MB is one of 90 KB there, which says as much
+        of the colour of each face as the whole of it.
+        """
+        if extension_of(path) not in LOOK_IMAGES:
+            return None
+        folder, name = posixpath.split(path)
+        for candidate in ("%s.png" % name, "%s.auto.png" % name):
+            smaller = posixpath.join(folder, ".thumbs", "256x256", candidate)
+            if self.exists(smaller):
+                return smaller
+        return None
 
 
 class MemoryStore(Store):
@@ -1161,10 +1255,19 @@ class S3Store(Store):
 
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]+")
 
+# What a part's file is named with after its asset's id, for the files it is
+# made of other than the default (see 'Source.variant'). No id ends in one, so
+# a file's name says which asset it is of and which of its files it holds.
+VARIANTS = (".textured", ".bare")
+
 
 def safe_id(text):
-    """A part name from anything: what PartCAD and a path both take."""
-    return _SAFE_ID.sub("_", text or "").strip("_.") or "asset"
+    """A part name from anything: what PartCAD and a path both take, and never ending like a variant ('X_bare')."""
+    name = _SAFE_ID.sub("_", text or "").strip("_.") or "asset"
+    for variant in VARIANTS:
+        if name.endswith(variant):
+            name = name[: -len(variant)] + "_" + variant[1:]
+    return name
 
 
 class Asset:
@@ -1330,8 +1433,15 @@ class Source:
             "searchKinds": kinds,
         }
 
+    def variant(self):
+        """What an asset's USDZ is named with after its id: another for each set of files it can be made of."""
+        if self.flag("textures"):
+            return ".textured"
+        return "" if self.flag("looks", True) else ".bare"
+
     def file_name(self, asset):
-        return "%s%s.usdz" % (asset.id, ".textured" if self.flag("textures") else "")
+        """The name of an asset's USDZ, so that none is taken for another made of other files."""
+        return "%s%s.usdz" % (asset.id, self.variant())
 
     def part_config(self, asset):
         config = {
@@ -1351,20 +1461,48 @@ class Source:
         return config
 
     def _assets(self, collection):
+        """{id: asset} of a collection, by the id its part is named by, whatever a plugin keyed them by."""
         reason = self.unavailable(collection)
         if reason:
             raise SourceError("%s: %s" % (self.NAME, reason))
-        return self.assets(collection)
+        return {asset.id: asset for asset in self.assets(collection).values()}
 
-    def package(self, asset):
-        """The bytes of an asset's USDZ: itself if it is one, else its root layer and everything it reaches."""
+    def package(self, asset, variant=None):
+        """The bytes of an asset's USDZ: itself if it is one, else its root layer and everything it reaches.
+
+        'variant' says which of its files it is made of, as 'variant()' names
+        them; the plugin's parameters' when not given.
+        """
+        variant = self.variant() if variant is None else variant
+        textures = variant == ".textured"
         limit = int(self.number("max_size_mb", DEFAULT_MAX_SIZE_MB) * (1 << 20))
         if extension_of(asset.root) == "usdz":
             size = asset.store.size(asset.root)
             if size > limit:
-                raise TooLarge(self._too_large(asset, size, limit))
+                raise TooLarge(self._too_large(asset, size, limit, textures))
             return asset.store.read(asset.root)
-        textures = self.flag("textures")
+        # The files a part's look is read from are carried unless 'looks' says
+        # not: each image as a smaller copy where the source keeps one, and
+        # otherwise as it is where it is no larger than LOOK_MAX_MB.
+        stand_ins = {}
+
+        def look(path):
+            if not is_look(path):
+                return False
+            if extension_of(path) in LOOK_SHADERS or not asset.store.exists(path):
+                # A missing one is reported as missing, with no copy of it to look for.
+                return True
+            smaller = asset.store.stand_in(path)
+            if smaller is not None:
+                stand_ins[path] = smaller
+                return True
+            return asset.store.size(path) <= LOOK_MAX_MB * (1 << 20)
+
+        carried = True if textures else (look if variant == "" else False)
+
+        def size(path):
+            return asset.store.size(stand_ins.get(path, path))
+
         # Refused before it is fetched, by the sizes the source lists: a layer
         # of a gigabyte is not downloaded to be told it is too large.
         try:
@@ -1372,13 +1510,14 @@ class Source:
                 asset.root,
                 asset.store.read,
                 asset.store.exists,
-                textures=textures,
+                textures=carried,
                 prefetch=getattr(asset.store, "prefetch", None),
-                size=asset.store.size,
+                size=size,
                 limit=limit,
             )
         except TooLarge as e:
-            raise TooLarge(self._too_large(asset, e.args[0] if e.args and isinstance(e.args[0], int) else 0, limit))
+            size = e.args[0] if e.args and isinstance(e.args[0], int) else 0
+            raise TooLarge(self._too_large(asset, size, limit, textures))
         if missing:
             shown = ", ".join("%s (in %s)" % (written, path) for path, written in missing[:5])
             warn(
@@ -1388,12 +1527,14 @@ class Source:
             )  # fmt: skip
         prefetch = getattr(asset.store, "prefetch", None)
         if prefetch is not None:
-            prefetch(files)
+            prefetch([stand_ins.get(f, f) for f in files])
         base = package_root(files)
-        inner = [(f[len(base) + 1 :] if base else f, asset.store.read(f)) for f in files]
+        # A stand-in is carried under the name of the image it stands in for, so
+        # that the layers that name the image find it.
+        inner = [(f[len(base) + 1 :] if base else f, asset.store.read(stand_ins.get(f, f))) for f in files]
         return write_usdz(inner)
 
-    def _too_large(self, asset, size, limit):
+    def _too_large(self, asset, size, limit, textures=False):
         return (
             "%s: %s is %s MB%s, more than the %d MB a part's file may be here. Raise the plugin's 'max_size_mb' "
             "to take it (see the README)"
@@ -1401,7 +1542,7 @@ class Source:
                 self.NAME,
                 asset.id,
                 ("%d" % (size >> 20)) if size else "more than %d" % (limit >> 20),
-                " with its textures" if self.flag("textures") else "",
+                " with its textures" if textures else "",
                 limit >> 20,
             )
         )
@@ -1444,15 +1585,19 @@ class Source:
         return {asset.id: self.part_config(asset) for _, _, asset in ranked[:limit]}
 
     def file(self, collection, path):
-        stem = path[: -len(".usdz")] if path.endswith(".usdz") else None
-        if stem is None:
+        if not path.endswith(".usdz"):
             return None
-        stem = stem[: -len(".textured")] if stem.endswith(".textured") else stem
+        # The name says which asset and which of its files, whatever the
+        # parameters are now: no id ends like a variant (see 'safe_id'), so one
+        # name is never two packages.
+        stem = path[: -len(".usdz")]
+        variant = next((v for v in VARIANTS if stem.endswith(v)), "")
+        stem = stem[: len(stem) - len(variant)]
         asset = self._assets(collection or "").get(stem)
         if asset is None:
             raise NotFound("%s: no asset %s" % (self.NAME, stem))
         self.check_license()
-        return base64.b64encode(self.package(asset)).decode("ascii")
+        return base64.b64encode(self.package(asset, variant)).decode("ascii")
 
     def get(self, key):
         """One key of the repository protocol; None for a key there is no answer to."""
