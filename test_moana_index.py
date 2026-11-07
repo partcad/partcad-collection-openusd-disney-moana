@@ -6,10 +6,9 @@
 """Tests of the Moana archive's seek index: reading members through it, and building it.
 
 The archives are gzipped tars made here. The reader is tested with access
-points made in pure Python - after a sync flush, which ends on a byte, and
-after a block flush, which does not - so it runs everywhere; the builder needs
-the system's libz, through ctypes, and is skipped where there is none to load.
-Nothing here touches the network.
+points made in pure Python - after a sync flush, which ends a block on a byte -
+so it runs everywhere; the builder needs the system's libz, through ctypes, and
+is skipped where there is none to load. Nothing here touches the network.
 """
 
 import gzip
@@ -64,33 +63,24 @@ def _tar(files):
     return raw, offsets
 
 
-def indexed_archive(files, aligned=(), unaligned=(), archive_info=None):
-    """(gzipped tar of 'files', its Index): an access point before each member 'aligned' or 'unaligned' names.
+def indexed_archive(files, aligned=(), archive_info=None):
+    """(gzipped tar of 'files', its Index): an access point before each member 'aligned' names.
 
-    One before a member of 'aligned' is made with a sync flush, which ends on a
-    byte; one before a member of 'unaligned' with a block flush, which does
-    not - its bits are found by trying each, since zlib does not say how many
-    it holds back.
+    Made with a sync flush, which ends a deflate block on a byte - the only
+    place the reader begins (see moana_index.py).
     """
     raw, offsets = _tar(files)
-    cuts = sorted([(offsets[n][0], zlib.Z_SYNC_FLUSH) for n in aligned] +
-                  [(offsets[n][0], zlib.Z_BLOCK) for n in unaligned])  # fmt: skip
+    cuts = sorted(offsets[n][0] for n in aligned)
     compressor = zlib.compressobj(6, zlib.DEFLATED, 31)
     out, done, flushed = bytearray(), 0, []
-    for at, mode in cuts:
+    for at in cuts:
         out += compressor.compress(raw[done:at])
         done = at
-        out += compressor.flush(mode)
-        flushed.append((len(out), at, mode))
+        out += compressor.flush(zlib.Z_SYNC_FLUSH)
+        flushed.append((len(out), at))
     out += compressor.compress(raw[done:]) + compressor.flush()
     data = bytes(out)
-    points = []
-    for length, at, mode in flushed:
-        window = raw[max(0, at - 32768) : at]
-        if mode == zlib.Z_SYNC_FLUSH:
-            points.append((length, 0, at, window))
-        else:
-            points.append(_held_back(data, length, at, window, raw))
+    points = [(length, 0, at, raw[max(0, at - 32768) : at]) for length, at in flushed]
     members = {}
     for name, (_, start, size) in offsets.items():
         if name not in files:
@@ -107,22 +97,6 @@ def _header(archive, points, members):
         "points": [[c, bits, u, len(window)] for c, bits, u, window in points],
         "members": [[name] + list(m) for name, m in members.items()],
     }
-
-
-def _held_back(data, length, at, window, raw):
-    """The point a block flush made: 'length' bytes out, and the 0 to 7 bits the next byte begins with."""
-    for held in range(1, 8):
-        point = (length + 1, 8 - held, at, window)
-        start, end = point[0] - 1, min(len(data), point[0] + 4096)
-        inflater = zlib.decompressobj(-15, zdict=window)
-        realign = mi._Realign(point[1])
-        try:
-            got = inflater.decompress(realign.feed(data[start:end]))
-        except zlib.error:
-            continue
-        if got and raw[at : at + len(got)] == got:
-            return point
-    return (length, 0, at, window)
 
 
 class Sink:
@@ -173,32 +147,34 @@ FILES = {
 }
 
 
-def test_a_member_is_read_from_the_access_point_before_it_on_a_byte_or_not():
-    data, index = indexed_archive(
-        FILES,
-        aligned=["island/usd/island.usda", "island/usd/elements/isBeach/element.usda", "island/textures/isBeach/sand.ptx"],
-        unaligned=["island/usd/elements/isKava/element.usda"],
-    )
-    assert any(bits for _, bits, _, _ in index.points), "no point off a byte boundary to test"
-    assert any(not bits for _, bits, _, _ in index.points)
+ALIGNED = [
+    "island/usd/island.usda",
+    "island/usd/elements/isKava/element.usda",
+    "island/usd/elements/isBeach/element.usda",
+    "island/textures/isBeach/sand.ptx",
+]
+
+
+def test_a_member_is_read_from_the_access_point_before_it_and_not_the_archive_up_to_it():
+    data, index = indexed_archive(FILES, aligned=ALIGNED)
     for folder in ("isKava", "isBeach"):
-        names = [n for n in index.members if "/%s/" % folder in n]
+        names = [n for n in index.members if "/elements/%s/" % folder in n]
         sink, fetch = Sink(), _fetcher(data)
         fetched = mi.read(fetch, index.points, index.members, names, sink)
         assert sink.files == {n: FILES[n] for n in names}
         # One request, from the folder's own access point: not the archive up to it.
         ((start, end),) = fetch.asked
         point = next(p for p in index.points if p[2] == min(index.members[n].offset for n in names) - 512)
-        assert start == point[0] - (1 if point[1] else 0) and fetched == end - start < len(data) // 2
+        assert start == point[0] and fetched == end - start < len(data) // 2
 
 
 def test_members_far_apart_are_read_a_request_each_and_near_ones_in_one():
-    data, index = indexed_archive(
-        FILES,
-        aligned=["island/usd/island.usda", "island/usd/elements/isBeach/element.usda"],
-        unaligned=["island/usd/elements/isKava/element.usda"],
-    )
-    names = ["island/usd/island.usda", "island/usd/elements/isKava/element.usda", "island/usd/elements/isBeach/geometry.usd"]
+    data, index = indexed_archive(FILES, aligned=ALIGNED)
+    names = [
+        "island/usd/island.usda",
+        "island/usd/elements/isKava/element.usda",
+        "island/usd/elements/isBeach/geometry.usd",
+    ]
     plan = mi.plan(index.points, index.members, names)
     assert [len(run[3]) for run in plan] == [1, 1, 1]
     sink = Sink()
@@ -207,6 +183,24 @@ def test_members_far_apart_are_read_a_request_each_and_near_ones_in_one():
     # Two members after one point, with no point between them, are one read.
     both = ["island/usd/elements/isKava/element.usda", "island/usd/elements/isKava/model.usd"]
     assert [run[3] for run in mi.plan(index.points, index.members, both)] == [both]
+
+
+def test_a_member_deflate_kept_as_it_is_is_read_too():
+    """Bytes that do not compress - a crate file's LZ4 - are written as stored blocks, which begin on a byte."""
+    stored = dict(FILES)
+    stored["island/usd/elements/isKava/model.usd"] = random.Random(11).randbytes(300000)
+    data, index = indexed_archive(stored, aligned=ALIGNED)
+    names = [n for n in index.members if "/isKava/" in n]
+    sink = Sink()
+    mi.read(_fetcher(data), index.points, index.members, names, sink)
+    assert sink.files == {n: stored[n] for n in names}
+
+
+def test_an_empty_member_is_made_without_a_read():
+    data, index = indexed_archive(FILES, aligned=ALIGNED)
+    sink, fetch = Sink(), _fetcher(data)
+    assert mi.read(fetch, index.points, index.members, ["island/usd/elements/isBeach/empty.usda"], sink) == 0
+    assert sink.files == {"island/usd/elements/isBeach/empty.usda": b""} and fetch.asked == []
 
 
 def test_a_member_that_is_not_what_the_index_says_is_discarded_and_said_to_be():
@@ -222,25 +216,22 @@ def test_a_member_that_is_not_what_the_index_says_is_discarded_and_said_to_be():
 def test_an_access_point_that_is_not_one_is_said_to_be_a_mismatch():
     data, index = indexed_archive(FILES, aligned=["island/usd/elements/isKava/element.usda"])
     c, bits, u, window = index.points[0]
-    index.points[0] = (c + 7, 3, u, window)
+    # Inside a byte: the reader does not begin there (see moana_index.py).
+    index.points[0] = (c, 3, u, window)
+    with pytest.raises(mi.Mismatch, match="not on a byte boundary"):
+        mi.read(_fetcher(data), index.points, index.members, ["island/usd/elements/isKava/model.usd"], Sink())
+    # Not where a block begins at all.
+    index.points[0] = (c + 7, 0, u, window)
     with pytest.raises(mi.Mismatch):
         mi.read(_fetcher(data), index.points, index.members, ["island/usd/elements/isKava/model.usd"], Sink())
-
-
-def test_the_bit_stream_is_shifted_onto_a_byte_across_pieces():
-    rng = random.Random(9)
-    data = bytes(rng.randrange(256) for _ in range(1000))
-    for bits in range(1, 8):
-        whole = int.from_bytes(data, "little") >> (8 - bits)
-        expected = whole.to_bytes(len(data), "little")[: len(data) - 1]
-        realign = mi._Realign(bits)
-        got = b"".join(realign.feed(data[i : i + 37]) for i in range(0, len(data), 37)) + realign.flush()
-        assert got[: len(expected)] == expected
-        assert got[-1] == data[-1] >> (8 - bits)
+    # And no point before a member.
+    index.points[0] = (c, 0, index.members["island/usd/elements/isKava/model.usd"].offset + 1, window)
+    with pytest.raises(mi.Mismatch, match="no access point before"):
+        mi.plan(index.points[:1], index.members, ["island/usd/elements/isKava/model.usd"])
 
 
 def test_an_index_file_reads_back_as_it_was_written(tmp_path):
-    data, index = indexed_archive(FILES, aligned=["island/usd/island.usda"], unaligned=["island/usd/elements/isKava/element.usda"])
+    data, index = indexed_archive(FILES, aligned=ALIGNED)
     path = tmp_path / "index.xz"
     path.write_bytes(mi.dump(index.archive, index.points, index.members, compressed=len(data)))
     again = mi.load(str(path))
@@ -248,6 +239,10 @@ def test_an_index_file_reads_back_as_it_was_written(tmp_path):
     assert mi.load(str(tmp_path / "none.xz")) is None
     (tmp_path / "bad.xz").write_bytes(b"not an index")
     assert mi.load(str(tmp_path / "bad.xz")) is None
+    import lzma
+
+    (tmp_path / "other.xz").write_bytes(lzma.compress(b"something else"))
+    assert mi.load(str(tmp_path / "other.xz")) is None
 
 
 # --- the builder --------------------------------------------------------------------
@@ -268,18 +263,22 @@ def test_the_builder_indexes_every_folder_and_the_reader_reads_every_member_thro
     data = gzip.compress(raw, compresslevel=6)
     work = str(tmp_path / "work")
     stream = io.BytesIO(data)
-    total_in, total_out = builder.scan(stream.read, work, scan_span=64 << 10, log=None)
-    assert (total_in, total_out) == (len(data), len(raw))
+    total_in, total_out, done = builder.scan(stream.read, work, scan_span=64 << 10, log=None)
+    # It stops at the first member past the USD layers: the textures are not read.
+    assert done and total_out < offsets["island/textures/isBeach/sand.ptx"][1] + 2 * (1 << 18)
+    assert total_in < len(data)
     found, windows = builder._load_work(work)
     archive = {"url": "https://example.com/island.tgz", "size": len(data), "etag": '"e"', "complete": True}
     index = mi.loads(builder.pack(found, windows, archive, 128 << 10))
     kept = {n for n in FILES if n.startswith("island/usd/")}
     assert set(index.members) == kept
-    assert any(bits for _, bits, _, _ in index.points), "every point the builder found was on a byte"
-    # A point before each folder, at or before its first member's header.
+    # Every point is on a byte: the reader begins nowhere else.
+    assert index.points and not any(bits for _, bits, _, _ in index.points)
+    # A point at or before each folder's first member's header: the last block that ends on a byte
+    # before it, which in an archive this small may be well before it.
     for folder in ("isKava", "isBeach"):
-        first = min(offsets[n][0] for n in kept if "/%s/" % folder in n)
-        assert any(first - 200000 < u <= first for _, _, u, _ in index.points)
+        first = min(offsets[n][0] for n in kept if "/elements/%s/" % folder in n)
+        assert any(u <= first for _, _, u, _ in index.points)
     sink = Sink()
     mi.read(_fetcher(data), index.points, index.members, sorted(kept), sink)
     assert sink.files == {n: FILES[n] for n in kept}
@@ -290,12 +289,43 @@ def test_the_builder_indexes_every_folder_and_the_reader_reads_every_member_thro
     assert fetch.asked[0][0] > len(data) // 4
 
 
+def test_a_scan_that_loses_its_connection_starts_again_and_one_that_cannot_says_so(tmp_path, monkeypatch, capsys):
+    builder = _builder()
+    raw, _ = _tar(FILES)
+    data = gzip.compress(raw, compresslevel=6)
+    attempts = []
+
+    class Answer(io.BytesIO):
+        headers = {"Content-Length": str(len(data)), "ETag": '"e"', "Last-Modified": "then"}
+
+        def __init__(self, cut):
+            super().__init__(data[:cut])
+
+    def urlopen(request, timeout=None):
+        attempts.append(request.full_url)
+        return Answer(len(data) // 3 if len(attempts) == 1 else len(data))
+
+    monkeypatch.setattr(builder.urllib.request, "urlopen", urlopen)
+    work = str(tmp_path / "work")
+    assert builder.main(["scan", work, "--url", "https://example.com/island.tgz"]) == 0
+    assert len(attempts) == 2 and "starting the pass again" in capsys.readouterr().err
+    with open(os.path.join(work, "archive.json")) as f:
+        assert '"complete": true' in f.read()
+    attempts.clear()
+    monkeypatch.setattr(builder.urllib.request, "urlopen", lambda request, timeout=None: Answer(len(data) // 3))
+    assert builder.main(["scan", work, "--url", "https://example.com/island.tgz", "--attempts", "2"]) == 1
+    assert "could not be read through" in capsys.readouterr().err
+
+
 def test_the_builder_says_what_each_spacing_of_points_costs(tmp_path, capsys):
     builder = _builder()
     raw, _ = _tar(FILES)
     data = gzip.compress(raw, compresslevel=6)
     work = str(tmp_path / "work")
     builder.scan(io.BytesIO(data).read, work, scan_span=64 << 10, log=None)
+    with open(os.path.join(work, "archive.json"), "w") as f:
+        f.write('{"url": "u", "size": %d, "etag": "e", "complete": false}' % len(data))
+    assert builder.main(["pack", work, str(tmp_path / "partial.xz")]) == 1
     with open(os.path.join(work, "archive.json"), "w") as f:
         f.write('{"url": "u", "size": %d, "etag": "e", "complete": true}' % len(data))
     assert builder.main(["measure", work]) == 0

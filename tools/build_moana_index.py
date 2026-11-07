@@ -20,15 +20,29 @@ cannot resume from one inside a byte; see moana_index.py):
   * every '--span' MB of the compressed stream between them, which is what a
     single file is read from.
 
-and the members of the archive under 'island/usd/', and its licence: each
-one's name, where its bytes begin in the uncompressed stream, its size, its
-SHA-256, and the first compressed byte past the block its last byte is in.
+and the members of the archive under 'island/usd/': each one's name, where its
+bytes begin in the uncompressed stream, its size, its SHA-256, and the first
+compressed byte past the block its last byte is in. (Not the archive's own
+'island/License.txt', which lies beyond them: the licence is shipped beside the
+index instead.)
+
+It reads the archive only as far as the USD layers go. The archive keeps all of
+'island/usd/' together near its start - the README, then the USD tree, then
+'island/ref' and the textures - and the tree ends 1,892,515,840 bytes into the
+compressed stream. That is known from one pass over 12.8 GB of the 15.2 that
+counted the members under 'island/usd/' as it went: 460 by 1.8 GB, 471 by
+2.9 GB, and 471 still at 12.8 GB. So a scan stops at the first member past the
+tree, about 1.9 GB in, rather than reading the textures to be sure.
+
+A deflate stream cannot be resumed in the middle, so a connection that drops
+starts the pass again from the beginning; after '--attempts' of those, it fails
+saying so.
 
 Python's zlib module cannot do this - it has no 'Z_BLOCK', and does not say
 where a block ends - so this asks the system's libz with ctypes. Only this tool
 does: the plugin reads the index with Python's own zlib.
 
-    python tools/build_moana_index.py scan  work/          # stream the archive once (17 GB inflated)
+    python tools/build_moana_index.py scan  work/          # stream the archive's first 1.9 GB once
     python tools/build_moana_index.py measure work/        # what each spacing of points costs
     python tools/build_moana_index.py pack work/ island-usd-v2.1.index.xz --span 16
 
@@ -42,10 +56,12 @@ import collections
 import ctypes
 import ctypes.util
 import hashlib
+import http.client
 import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -68,14 +84,19 @@ PAST_KEPT = 256 << 20
 
 
 def wanted(name):
-    """What the index describes: the archive's USD layers, and its licence (as the plugin keeps them).
+    """What the index describes: the archive's USD layers.
 
     Not the '._' files macOS's tar put beside every file and folder: they are
     its metadata, which nothing reads.
     """
     if name.rsplit("/", 1)[-1].startswith("._"):
         return False
-    return name.startswith("island/usd/") or name == "island/License.txt"
+    return name.startswith("island/usd/")
+
+
+def past(name):
+    """Whether the member 'name', met after the USD layers began, is past them: the scan stops there."""
+    return not name.startswith("island/usd/")
 
 
 def group_of(name):
@@ -288,12 +309,13 @@ class TarScanner:
 # --- scan ---------------------------------------------------------------------------
 
 
-def scan(read, work, keep=wanted, scan_span=SCAN_SPAN, log=print, until=None):
-    """Read the archive 'read(n)' gives once, and write the candidate points and the members into 'work'.
+def scan(read, work, keep=wanted, scan_span=SCAN_SPAN, log=print, until=None, stop=past):
+    """Read the archive 'read(n)' gives as far as its USD layers go, and write the points and the members into 'work'.
 
-    'until' stops after that many uncompressed bytes (for a quick look); the
-    index is built from the whole archive, so that a USD layer anywhere in it is
-    in it.
+    It stops at the first member 'stop(name)' says is past the layers, once
+    they have begun (see the module's docstring); 'until' stops after that
+    many uncompressed bytes, for a quick look. Answers (compressed bytes read,
+    uncompressed bytes made, whether it got past the layers).
     """
     os.makedirs(work, exist_ok=True)
     history = collections.deque(maxlen=512)  # recent boundaries on a byte, (compressed, 0, uncompressed, window)
@@ -302,6 +324,7 @@ def scan(read, work, keep=wanted, scan_span=SCAN_SPAN, log=print, until=None):
     pending = []  # indices of members whose end bound is not known yet
     by_name = {}
     state = {"last_end": None, "last_group": None, "last_periodic": None, "out": 0, "first_kept": None}
+    state["past"] = False
     started = time.time()
 
     def point_before(offset, why):
@@ -312,6 +335,9 @@ def scan(read, work, keep=wanted, scan_span=SCAN_SPAN, log=print, until=None):
         raise RuntimeError("no block boundary is remembered before offset %d (%s)" % (offset, why))
 
     def on_member(header, name, data, size, kind):
+        if state["first_kept"] is not None and stop is not None and stop(name):
+            state["past"] = True
+            return
         if kind not in "07" or not keep(name):
             return
         group = group_of(name)
@@ -333,7 +359,7 @@ def scan(read, work, keep=wanted, scan_span=SCAN_SPAN, log=print, until=None):
     def on_output(data):
         tar.feed(data)
         state["out"] += len(data)
-        return until is not None and state["out"] >= until
+        return state["past"] or (until is not None and state["out"] >= until)
 
     def on_boundary(compressed, bits, uncompressed, window):
         # Any boundary bounds the read of what ends before it; only one on a
@@ -358,7 +384,8 @@ def scan(read, work, keep=wanted, scan_span=SCAN_SPAN, log=print, until=None):
 
     total_in, total_out = inflate_blocks(read, on_output, on_boundary)
     if pending:
-        # Their last block is the archive's last; its end is the end of the stream.
+        # Their last bytes were made from no more than what had been read when
+        # the scan stopped, or the stream ended: that is a bound past them.
         for index in pending:
             members[index][4] = total_in
     last_end = state["last_end"] or 0
@@ -370,7 +397,7 @@ def scan(read, work, keep=wanted, scan_span=SCAN_SPAN, log=print, until=None):
             f.write(window)
     with open(os.path.join(work, "scan.json"), "w") as f:
         json.dump({"compressed": total_in, "uncompressed": total_out, "points": listed, "members": members}, f)
-    return total_in, total_out
+    return total_in, total_out, state["past"]
 
 
 # --- pack ---------------------------------------------------------------------------
@@ -431,6 +458,7 @@ def main(argv=None):
     s.add_argument("--url", default=ARCHIVE)
     s.add_argument("--file", help="read a local copy of the archive instead")
     s.add_argument("--until-gb", type=float, help="stop after this much inflated (a quick look; not to ship)")
+    s.add_argument("--attempts", type=int, default=3, help="passes to try when the connection drops")
     m = sub.add_parser("measure", help="what each spacing of points costs")
     m.add_argument("work")
     p = sub.add_parser("pack", help="write the index the plugin ships")
@@ -440,26 +468,39 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.command == "scan":
-        if args.file:
-            stat = os.stat(args.file)
-            archive = {"url": ARCHIVE, "size": stat.st_size, "etag": None, "last_modified": None}
-            source = open(args.file, "rb")
-        else:
-            request = urllib.request.Request(args.url, headers={"User-Agent": "partcad-moana-index-builder"})
-            source = urllib.request.urlopen(request, timeout=600)
-            archive = {
-                "url": args.url,
-                "size": int(source.headers["Content-Length"]),
-                "etag": source.headers.get("ETag"),
-                "last_modified": source.headers.get("Last-Modified"),
-            }
-        with source:
-            until = int(args.until_gb * 1e9) if args.until_gb else None
-            total_in, total_out = scan(source.read, args.work, until=until)
-        archive["complete"] = until is None
+        until = int(args.until_gb * 1e9) if args.until_gb else None
+        for attempt in range(1, args.attempts + 1):
+            if args.file:
+                stat = os.stat(args.file)
+                archive = {"url": ARCHIVE, "size": stat.st_size, "etag": None, "last_modified": None}
+                source = open(args.file, "rb")
+            else:
+                request = urllib.request.Request(args.url, headers={"User-Agent": "partcad-moana-index-builder"})
+                source = urllib.request.urlopen(request, timeout=600)
+                archive = {
+                    "url": args.url,
+                    "size": int(source.headers["Content-Length"]),
+                    "etag": source.headers.get("ETag"),
+                    "last_modified": source.headers.get("Last-Modified"),
+                }
+            try:
+                with source:
+                    total_in, total_out, done = scan(source.read, args.work, until=until)
+                break
+            except (OSError, http.client.HTTPException, urllib.error.URLError, RuntimeError) as e:
+                # A dropped connection ends the stream early; a deflate stream
+                # cannot be picked up again in the middle, so the pass starts over.
+                if args.file or attempt == args.attempts:
+                    print("the archive could not be read through: %s" % e, file=sys.stderr)
+                    return 1
+                print("attempt %d: %s; starting the pass again" % (attempt, e), file=sys.stderr)
+        archive["complete"] = done
         with open(os.path.join(args.work, "archive.json"), "w") as f:
             json.dump(archive, f, indent=1)
-        print("read %d compressed bytes into %d; the archive is %d" % (total_in, total_out, archive["size"]))
+        print(
+            "read %d compressed bytes into %d, %s; the archive is %d"
+            % (total_in, total_out, "past the USD layers" if done else "not past the USD layers", archive["size"])
+        )
         return 0
 
     found, windows = _load_work(args.work)
@@ -477,12 +518,15 @@ def main(argv=None):
             )  # fmt: skip
         return 0
     if not archive.get("complete"):
-        print("the work directory holds a partial scan; scan the whole archive to ship an index", file=sys.stderr)
+        print("the work directory holds a scan that stopped before the USD layers ended; scan again", file=sys.stderr)
         return 1
     data = pack(found, windows, archive, int(args.span * (1 << 20)))
     with open(args.out, "wb") as f:
         f.write(data)
-    print("%s: %d bytes, %d points, %d members" % (args.out, len(data), len(choose(found["points"], int(args.span * (1 << 20)))), len(found["members"])))
+    print(
+        "%s: %d bytes, %d points, %d members"
+        % (args.out, len(data), len(choose(found["points"], int(args.span * (1 << 20)))), len(found["members"]))
+    )
     return 0
 
 
