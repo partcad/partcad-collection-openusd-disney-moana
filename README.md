@@ -39,7 +39,7 @@ and the scene is called the "Moana Island Scene" and nothing else. Read it befor
 **Nothing here is manufacturable.** It is a scene made to be rendered; the package says
 `manufacturable: false`, and so does the plugin of what it serves.
 
-Requires PartCAD 0.9.6 or newer: the first release whose `//builtin` has the `usd` part type.
+Requires PartCAD 0.9.11 or newer: the first release whose `//builtin` has the `usd` part type.
 
 ## Listing, searching, building
 

@@ -18,7 +18,7 @@ url: https://www.disneyanimation.com/resources/moana-island-scene/
 
 # The first release whose //builtin has the 'usd' part type every part here
 # is.
-partcad: ">=0.9.6"
+partcad: ">=0.9.11"
 
 # Made to be looked at, rendered or simulated: nothing in them says they are
 # made to be manufactured. The plugin says the same of 'assets'.
