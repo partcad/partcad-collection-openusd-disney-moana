@@ -1255,10 +1255,19 @@ class S3Store(Store):
 
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]+")
 
+# What a part's file is named with after its asset's id, for the files it is
+# made of other than the default (see 'Source.variant'). No id ends in one, so
+# a file's name says which asset it is of and which of its files it holds.
+VARIANTS = (".textured", ".bare")
+
 
 def safe_id(text):
-    """A part name from anything: what PartCAD and a path both take."""
-    return _SAFE_ID.sub("_", text or "").strip("_.") or "asset"
+    """A part name from anything: what PartCAD and a path both take, and never ending like a variant ('X_bare')."""
+    name = _SAFE_ID.sub("_", text or "").strip("_.") or "asset"
+    for variant in VARIANTS:
+        if name.endswith(variant):
+            name = name[: -len(variant)] + "_" + variant[1:]
+    return name
 
 
 class Asset:
@@ -1457,15 +1466,20 @@ class Source:
             raise SourceError("%s: %s" % (self.NAME, reason))
         return self.assets(collection)
 
-    def package(self, asset):
-        """The bytes of an asset's USDZ: itself if it is one, else its root layer and everything it reaches."""
+    def package(self, asset, variant=None):
+        """The bytes of an asset's USDZ: itself if it is one, else its root layer and everything it reaches.
+
+        'variant' says which of its files it is made of, as 'variant()' names
+        them; the plugin's parameters' when not given.
+        """
+        variant = self.variant() if variant is None else variant
+        textures = variant == ".textured"
         limit = int(self.number("max_size_mb", DEFAULT_MAX_SIZE_MB) * (1 << 20))
         if extension_of(asset.root) == "usdz":
             size = asset.store.size(asset.root)
             if size > limit:
-                raise TooLarge(self._too_large(asset, size, limit))
+                raise TooLarge(self._too_large(asset, size, limit, textures))
             return asset.store.read(asset.root)
-        textures = self.flag("textures")
         # The files a part's look is read from are carried unless 'looks' says
         # not: each image as a smaller copy where the source keeps one, and
         # otherwise as it is where it is no larger than LOOK_MAX_MB.
@@ -1483,7 +1497,7 @@ class Source:
                 return True
             return asset.store.size(path) <= LOOK_MAX_MB * (1 << 20)
 
-        carried = True if textures else (look if self.flag("looks", True) else False)
+        carried = True if textures else (look if variant == "" else False)
 
         def size(path):
             return asset.store.size(stand_ins.get(path, path))
@@ -1501,7 +1515,8 @@ class Source:
                 limit=limit,
             )
         except TooLarge as e:
-            raise TooLarge(self._too_large(asset, e.args[0] if e.args and isinstance(e.args[0], int) else 0, limit))
+            size = e.args[0] if e.args and isinstance(e.args[0], int) else 0
+            raise TooLarge(self._too_large(asset, size, limit, textures))
         if missing:
             shown = ", ".join("%s (in %s)" % (written, path) for path, written in missing[:5])
             warn(
@@ -1518,7 +1533,7 @@ class Source:
         inner = [(f[len(base) + 1 :] if base else f, asset.store.read(stand_ins.get(f, f))) for f in files]
         return write_usdz(inner)
 
-    def _too_large(self, asset, size, limit):
+    def _too_large(self, asset, size, limit, textures=False):
         return (
             "%s: %s is %s MB%s, more than the %d MB a part's file may be here. Raise the plugin's 'max_size_mb' "
             "to take it (see the README)"
@@ -1526,7 +1541,7 @@ class Source:
                 self.NAME,
                 asset.id,
                 ("%d" % (size >> 20)) if size else "more than %d" % (limit >> 20),
-                " with its textures" if self.flag("textures") else "",
+                " with its textures" if textures else "",
                 limit >> 20,
             )
         )
@@ -1571,16 +1586,17 @@ class Source:
     def file(self, collection, path):
         if not path.endswith(".usdz"):
             return None
-        # Only the ending 'file_name' gave it: an asset whose own id ends in
-        # '.bare' or '.textured' is still that asset.
-        stem, variant = path[: -len(".usdz")], self.variant()
-        if variant and stem.endswith(variant):
-            stem = stem[: -len(variant)]
+        # The name says which asset and which of its files, whatever the
+        # parameters are now: no id ends like a variant (see 'safe_id'), so one
+        # name is never two packages.
+        stem = path[: -len(".usdz")]
+        variant = next((v for v in VARIANTS if stem.endswith(v)), "")
+        stem = stem[: len(stem) - len(variant)]
         asset = self._assets(collection or "").get(stem)
         if asset is None:
             raise NotFound("%s: no asset %s" % (self.NAME, stem))
         self.check_license()
-        return base64.b64encode(self.package(asset)).decode("ascii")
+        return base64.b64encode(self.package(asset, variant)).decode("ascii")
 
     def get(self, key):
         """One key of the repository protocol; None for a key there is no answer to."""

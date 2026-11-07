@@ -672,23 +672,35 @@ def test_a_missing_look_is_reported_by_the_file_it_would_be_and_no_copy_of_it_is
     assert asked and not [path for path in asked if "gone" in path]
 
 
-def test_an_asset_whose_id_ends_like_a_variant_is_still_that_asset():
+def test_one_name_is_one_package_whatever_the_parameters():
+    # No id ends like a variant, so no asset's name is another's with a variant.
+    assert [ua.safe_id(n) for n in ("Cup.bare", "Cup.textured", "Cup.bare.textured", "bare")] == [
+        "Cup_bare", "Cup_textured", "Cup.bare_textured", "bare"]  # fmt: skip
+
     class Twins(Source):
         def assets(self, collection):
-            return {
-                "Cup": ua.Asset("Cup", self.store, "assets/Cup/Cup.usda"),
-                "Cup.bare": ua.Asset("Cup.bare", self.store, "assets/Ball.usdz"),
-            }
+            twins = [ua.Asset("Cup", self.store, "assets/Cup/Cup.usda"),
+                     ua.Asset("Cup.bare", self.store, "assets/Ball.usdz")]  # fmt: skip
+            return {asset.id: asset for asset in twins}
 
-    ball = LOOKED["assets/Ball.usdz"]
-    for parameters, name in (({}, "Cup.bare.usdz"), ({"looks": "false"}, "Cup.bare.bare.usdz"),
-                             ({"textures": "true"}, "Cup.bare.textured.usdz")):  # fmt: skip
+    names = {}
+    for parameters in ({}, {"looks": "false"}, {"textures": "true"}):
         source = Twins(ua.MemoryStore(LOOKED), parameters)
-        assert source.get("set/objects/part/Cup.bare")["path"] == name
-        assert base64.b64decode(source.get("set/files/" + name)) == ball, name
-    # A name made with other parameters is no asset's here, rather than another file served under it.
-    with pytest.raises(ua.NotFound):
-        Twins(ua.MemoryStore(LOOKED)).file("set", "Cup.textured.usdz")
+        for asset in ("Cup", "Cup_bare"):
+            names[source.get("set/objects/part/" + asset)["path"]] = (asset, tuple(parameters))
+    assert len(names) == 6, names
+    # And the name says what it holds, whatever the parameters it is asked with.
+    ball = LOOKED["assets/Ball.usdz"]
+    for parameters in ({}, {"looks": "false"}, {"textures": "true"}):
+        source = Twins(ua.MemoryStore(LOOKED), parameters)
+        for name in ("Cup_bare.usdz", "Cup_bare.bare.usdz", "Cup_bare.textured.usdz"):
+            assert base64.b64decode(source.file("set", name)) == ball, (name, parameters)
+        with zipfile.ZipFile(io.BytesIO(base64.b64decode(source.file("set", "Cup.bare.usdz")))) as z:
+            assert z.namelist() == ["Cup.usda", "geom.usda"], parameters
+        with zipfile.ZipFile(io.BytesIO(base64.b64decode(source.file("set", "Cup.textured.usdz")))) as z:
+            assert "tex/cup_normal.png" in z.namelist(), parameters
+        with zipfile.ZipFile(io.BytesIO(base64.b64decode(source.file("set", "Cup.usdz")))) as z:
+            assert "tex/cup_albedo.png" in z.namelist() and "tex/cup_normal.png" not in z.namelist(), parameters
 
 
 def test_an_asset_larger_than_allowed_is_refused_before_its_layers_are_read(capsys):
