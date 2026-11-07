@@ -679,9 +679,9 @@ def test_one_name_is_one_package_whatever_the_parameters():
 
     class Twins(Source):
         def assets(self, collection):
-            twins = [ua.Asset("Cup", self.store, "assets/Cup/Cup.usda"),
-                     ua.Asset("Cup.bare", self.store, "assets/Ball.usdz")]  # fmt: skip
-            return {asset.id: asset for asset in twins}
+            # Keyed by the source's names, as a plugin may: a part is still found by its id.
+            return {"Cup": ua.Asset("Cup", self.store, "assets/Cup/Cup.usda"),
+                    "Cup.bare": ua.Asset("Cup.bare", self.store, "assets/Ball.usdz")}  # fmt: skip
 
     names = {}
     for parameters in ({}, {"looks": "false"}, {"textures": "true"}):

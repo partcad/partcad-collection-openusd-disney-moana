@@ -1461,10 +1461,11 @@ class Source:
         return config
 
     def _assets(self, collection):
+        """{id: asset} of a collection, by the id its part is named by, whatever a plugin keyed them by."""
         reason = self.unavailable(collection)
         if reason:
             raise SourceError("%s: %s" % (self.NAME, reason))
-        return self.assets(collection)
+        return {asset.id: asset for asset in self.assets(collection).values()}
 
     def package(self, asset, variant=None):
         """The bytes of an asset's USDZ: itself if it is one, else its root layer and everything it reaches.
