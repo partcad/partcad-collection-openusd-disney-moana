@@ -16,11 +16,24 @@ pc search parts -P //pub/collection/openusd/disney-moana/assets -k palm
 pc inspect //pub/collection/openusd/disney-moana/assets:isLavaRocks
 ```
 
-**It is one 15 GB archive, read whole, once - when you say so.** Disney publishes the scene's USD as a
-single gzipped tar archive (`island-usd-v2.1.tgz`), and a tar archive cannot be read in pieces. So the
-first part built streams all 15 GB of it, keeping its USD layers (3.2 GB) and its licence, and leaving
-its 14 GB of Ptex textures; every part after that is read from what was kept. The plugin does not do
-that until you allow it, as your own parameter of the plugin, in `~/.partcad/config.yaml`:
+**An element is read from its own part of one 15 GB archive - when you say so.** Disney publishes the
+scene's USD as a single gzipped tar archive (`island-usd-v2.1.tgz`), which cannot be read in pieces as
+it is. This repository ships a seek index of it (`island-usd-v2.1.index.xz`, 1.4 MB), and building an
+element asks Disney's server for that element's own stretch of the archive and nothing else:
+
+| Element | Read |
+| --- | ---: |
+| `isHibiscusYoung`, `isNaupakaA`, `isKava`, `isLavaRocks`, `isGardeniaA`, `isHibiscus`, `isPalmDead` | 0.3 to 2.6 MB each |
+| `isPandanusA`, `isDunesA` | 8 and 16 MB |
+| `isDunesB`, `isIronwoodB`, `isIronwoodA1`, `isMountainA`, `isCoastline`, `isBayCedarA1` | 40 to 65 MB |
+| `osOcean`, `isPalmRig` | 118 and 159 MB |
+| `isCoral`, `isMountainB`, `isBeach` | 317, 387 and 548 MB |
+
+What is read is kept in the plugin's cache, so it is read once. Should the archive on the server no
+longer be the one the index describes - its size or ETag changed, or a file read does not match its
+SHA-256 - the plugin says so and reads the whole archive instead, once, keeping its USD layers (3.2 GB)
+and leaving its 14 GB of Ptex textures, as it did before it had an index. Neither is done until you
+allow it, as your own parameter of the plugin, in `~/.partcad/config.yaml`:
 
 ```yaml
 parameters:
@@ -28,13 +41,32 @@ parameters:
     download: true
 ```
 
-Until then, the elements are listed - from what the archive is known to hold - and nothing is fetched.
+Until then, the elements are listed - from the index - and nothing is fetched.
+
+**Give the first read time.** PartCAD waits 180 seconds for each answer from a plugin, and reading is
+done inside one: an element of a few MB is read well within it, but `isCoral`, `isMountainB` or
+`isBeach` (300 to 550 MB), or the whole archive where the index does not match, takes longer on most
+connections, and an answer cut off is read again from the start. Raise it before the first build of
+one of those, in the same `~/.partcad/config.yaml`:
+
+```yaml
+plugin:
+  query:
+    timeout: 3600
+```
+
+or as `PC_PLUGIN_QUERY_TIMEOUT=3600` for one command. What was read is kept, so later builds need none of it.
 
 **Disney's licence.** The scene is under its own [licence](https://media.disneyanimation.com/uploads/production/data_set_asset/4/asset/License.txt):
 for research and software development, benchmarking included, and nothing else; its notice is kept,
 and the scene is called the "Moana Island Scene" and nothing else. Read it before you set `download`.
 
-**No geometry is vendored.** Nothing of the scene is in this repository.
+**No geometry is vendored, but pieces of the scene are.** The index has to carry, for each place it
+lets a read begin, the 32 KB of the archive just before it - which is how a gzip stream is read from
+the middle - so `island-usd-v2.1.index.xz` holds 67 such pieces of the scene's USD layers. Disney's
+licence lets those be redistributed with its copyright notice, its conditions and its disclaimer,
+which are beside the index, verbatim, in `island-usd-v2.1.index.LICENSE.txt`, and under its terms:
+for research and software development only.
 
 **Nothing here is manufacturable.** It is a scene made to be rendered; the package says
 `manufacturable: false`, and so does the plugin of what it serves.
@@ -124,7 +156,7 @@ it can be; `isBeach`, `isMountainB` and `isCoral` are hundreds of MB of geometry
 
 | Parameter | Default | What it is |
 | --- | --- | --- |
-| `download` | `false` | Whether the plugin may stream the 15 GB archive, once, keeping its USD layers. Nothing is fetched until it may. Yours alone: set it in `~/.partcad/config.yaml`. |
+| `download` | `false` | Whether the plugin may read from the 15 GB archive: an element's part of it through the index it ships, or, where the index does not match the archive, the whole archive once, keeping its USD layers. Nothing is fetched until it may. Yours alone: set it in `~/.partcad/config.yaml`. |
 | `textures` | `false` | Whether a part's USDZ carries the textures its layers name. The archive's Ptex textures are not kept, so this changes nothing here. |
 | `max_size_mb` | `512` | The most a part's USDZ may be, in MB. |
 
@@ -160,12 +192,25 @@ about two seconds, each collection searching its own catalog; `pc info` of `isPa
 | --- | --- |
 | `partcad.yaml` | `//pub/collection/openusd/disney-moana`; the `assets` external dependency and the `moana_repo` repository that serves it. |
 | `moana_repo.py` | The repository plugin: where Disney keeps the island. |
+| `moana_index.py` | Reading files of the archive through its seek index: HTTP range requests, inflated from an access point with Python's own `zlib`. |
+| `island-usd-v2.1.index.xz` | The seek index: 67 access points, and the 471 files under `island/usd/` with their places and SHA-256s. |
+| `island-usd-v2.1.index.LICENSE.txt` | Disney's licence for the Moana Island Scene, verbatim: the pieces of the scene in the index are under it. |
+| `tools/build_moana_index.py` | Builds the index, from one pass over the archive's first 1.9 GB (it needs the system's `libz`). |
 | `usd_assets.py` | What every OpenUSD collection plugin shares, byte for byte: following a USD asset's layers, packing a USDZ, reading remote archives, buckets and listings a piece at a time, searching a catalog, the keys PartCAD asks. |
 | `shared.sha256` | The digests of the shared files and their tests. They are the same in every `partcad-collection-openusd-*` repository - pixar, usd-wg, apple, nvidia, aswf-dpel and disney-moana - and a test fails when one here differs: change them in all of them. |
 | `test_*.py` | The tests. Nothing in them touches the network. |
 
 ```shell
 python -m pytest
+```
+
+Disney's archive has not changed since 2023. If it does, the plugin falls back to reading it whole until
+the index is built again:
+
+```shell
+python tools/build_moana_index.py scan work/      # the archive's first 1.9 GB, once
+python tools/build_moana_index.py measure work/   # what each spacing of access points costs
+python tools/build_moana_index.py pack work/ island-usd-v2.1.index.xz --span 32
 ```
 
 When what the plugin answers changes - here or in `usd_assets.py` - raise `CACHE_VERSION` in

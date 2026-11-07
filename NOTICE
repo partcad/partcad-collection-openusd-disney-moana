@@ -16,5 +16,13 @@ and remain Disney Enterprises, Inc.'s, under the License for Moana Island Scene
 for research and software development only. Nothing is fetched until the user
 has allowed the plugin to read the archive.
 
+The seek index of the archive, island-usd-v2.1.index.xz, holds 67 pieces of
+32 KB of the scene's USD layers - the data just before each place a read of the
+archive may begin. They are redistributed under the License for Moana Island
+Scene, whose copyright notice, conditions and disclaimer are reproduced in full
+in island-usd-v2.1.index.LICENSE.txt:
+
+    Copyright 2017-2022 Disney Enterprises, Inc. All rights reserved.
+
 Moana is a trademark of Disney Enterprises, Inc. This package is not
 affiliated with or endorsed by Disney; the scene is the Moana Island Scene.
