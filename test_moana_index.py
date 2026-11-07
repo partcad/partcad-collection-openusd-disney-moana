@@ -321,16 +321,19 @@ def test_a_scan_that_loses_its_connection_starts_again_and_one_that_cannot_says_
     class Sizeless(Answer):
         headers = {}
 
+    class Superscript(Answer):
+        headers = {"Content-Length": "\u00b2"}  # a digit to str.isdigit, and not one to int
+
     def flaky(request, timeout=None):
         attempts.append(request.full_url)
         if len(attempts) == 1:
             raise builder.urllib.error.URLError("timed out")
-        return Sizeless(len(data)) if len(attempts) == 2 else Answer(len(data))
+        return [Sizeless, Superscript, Answer][len(attempts) - 2](len(data))
 
     monkeypatch.setattr(builder.urllib.request, "urlopen", flaky)
-    assert builder.main(["scan", work, "--url", "https://example.com/island.tgz"]) == 0
+    assert builder.main(["scan", work, "--url", "https://example.com/island.tgz", "--attempts", "4"]) == 0
     err = capsys.readouterr().err
-    assert len(attempts) == 3 and "timed out" in err and "did not say how large" in err
+    assert len(attempts) == 4 and "timed out" in err and err.count("did not say how large") == 2
     # Only a web address is fetched; a file is read with --file.
     with pytest.raises(SystemExit, match="http or https"):
         builder.main(["scan", work, "--url", "file:///etc/passwd"])

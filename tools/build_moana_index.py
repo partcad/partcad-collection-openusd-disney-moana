@@ -460,13 +460,16 @@ def _open(args):
         raise SystemExit("--url must be an http or https URL; a local copy is read with --file")
     request = urllib.request.Request(args.url, headers={"User-Agent": "partcad-moana-index-builder"})
     source = urllib.request.urlopen(request, timeout=600)  # noqa: S310 - the scheme is checked above
-    length = source.headers.get("Content-Length")
-    if not length or not str(length).isdigit():
+    try:
+        size = int(source.headers.get("Content-Length") or "")
+    except ValueError:
+        size = -1
+    if size < 0 or not str(source.headers.get("Content-Length")).isascii():
         source.close()
         raise RuntimeError("the server did not say how large the archive is")
     archive = {
         "url": args.url,
-        "size": int(length),
+        "size": size,
         "etag": source.headers.get("ETag"),
         "last_modified": source.headers.get("Last-Modified"),
     }
