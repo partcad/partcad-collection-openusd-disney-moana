@@ -62,6 +62,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -455,8 +456,10 @@ def _open(args):
     if args.file:
         stat = os.stat(args.file)
         return open(args.file, "rb"), {"url": ARCHIVE, "size": stat.st_size, "etag": None, "last_modified": None}
+    if urllib.parse.urlsplit(args.url).scheme not in ("http", "https"):
+        raise SystemExit("--url must be an http or https URL; a local copy is read with --file")
     request = urllib.request.Request(args.url, headers={"User-Agent": "partcad-moana-index-builder"})
-    source = urllib.request.urlopen(request, timeout=600)
+    source = urllib.request.urlopen(request, timeout=600)  # noqa: S310 - the scheme is checked above
     length = source.headers.get("Content-Length")
     if not length or not str(length).isdigit():
         source.close()

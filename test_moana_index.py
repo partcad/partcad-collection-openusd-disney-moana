@@ -331,6 +331,9 @@ def test_a_scan_that_loses_its_connection_starts_again_and_one_that_cannot_says_
     assert builder.main(["scan", work, "--url", "https://example.com/island.tgz"]) == 0
     err = capsys.readouterr().err
     assert len(attempts) == 3 and "timed out" in err and "did not say how large" in err
+    # Only a web address is fetched; a file is read with --file.
+    with pytest.raises(SystemExit, match="http or https"):
+        builder.main(["scan", work, "--url", "file:///etc/passwd"])
 
 
 def test_the_builder_says_what_each_spacing_of_points_costs(tmp_path, capsys):
