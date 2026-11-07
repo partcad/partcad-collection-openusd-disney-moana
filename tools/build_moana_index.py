@@ -450,6 +450,26 @@ def costs(found, span):
     }
 
 
+def _open(args):
+    """(the archive as a stream, what is known of it): the local copy '--file' names, or the URL's answer."""
+    if args.file:
+        stat = os.stat(args.file)
+        return open(args.file, "rb"), {"url": ARCHIVE, "size": stat.st_size, "etag": None, "last_modified": None}
+    request = urllib.request.Request(args.url, headers={"User-Agent": "partcad-moana-index-builder"})
+    source = urllib.request.urlopen(request, timeout=600)
+    length = source.headers.get("Content-Length")
+    if not length or not str(length).isdigit():
+        source.close()
+        raise RuntimeError("the server did not say how large the archive is")
+    archive = {
+        "url": args.url,
+        "size": int(length),
+        "etag": source.headers.get("ETag"),
+        "last_modified": source.headers.get("Last-Modified"),
+    }
+    return source, archive
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -470,20 +490,10 @@ def main(argv=None):
     if args.command == "scan":
         until = int(args.until_gb * 1e9) if args.until_gb else None
         for attempt in range(1, args.attempts + 1):
-            if args.file:
-                stat = os.stat(args.file)
-                archive = {"url": ARCHIVE, "size": stat.st_size, "etag": None, "last_modified": None}
-                source = open(args.file, "rb")
-            else:
-                request = urllib.request.Request(args.url, headers={"User-Agent": "partcad-moana-index-builder"})
-                source = urllib.request.urlopen(request, timeout=600)
-                archive = {
-                    "url": args.url,
-                    "size": int(source.headers["Content-Length"]),
-                    "etag": source.headers.get("ETag"),
-                    "last_modified": source.headers.get("Last-Modified"),
-                }
             try:
+                # Opened inside the attempt: a connection that cannot be made,
+                # or an answer that does not say its size, is tried again too.
+                source, archive = _open(args)
                 with source:
                     total_in, total_out, done = scan(source.read, args.work, until=until)
                 break

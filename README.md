@@ -142,7 +142,7 @@ it can be; `isBeach`, `isMountainB` and `isCoral` are hundreds of MB of geometry
 
 | Parameter | Default | What it is |
 | --- | --- | --- |
-| `download` | `false` | Whether the plugin may stream the 15 GB archive, once, keeping its USD layers. Nothing is fetched until it may. Yours alone: set it in `~/.partcad/config.yaml`. |
+| `download` | `false` | Whether the plugin may read from the 15 GB archive: an element's part of it through the index it ships, or, where the index does not match the archive, the whole archive once, keeping its USD layers. Nothing is fetched until it may. Yours alone: set it in `~/.partcad/config.yaml`. |
 | `textures` | `false` | Whether a part's USDZ carries the textures its layers name. The archive's Ptex textures are not kept, so this changes nothing here. |
 | `max_size_mb` | `512` | The most a part's USDZ may be, in MB. |
 

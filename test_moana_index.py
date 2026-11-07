@@ -315,6 +315,22 @@ def test_a_scan_that_loses_its_connection_starts_again_and_one_that_cannot_says_
     monkeypatch.setattr(builder.urllib.request, "urlopen", lambda request, timeout=None: Answer(len(data) // 3))
     assert builder.main(["scan", work, "--url", "https://example.com/island.tgz", "--attempts", "2"]) == 1
     assert "could not be read through" in capsys.readouterr().err
+    # A connection that cannot be made, or an answer that does not say its size, is a pass tried again.
+    attempts.clear()
+
+    class Sizeless(Answer):
+        headers = {}
+
+    def flaky(request, timeout=None):
+        attempts.append(request.full_url)
+        if len(attempts) == 1:
+            raise builder.urllib.error.URLError("timed out")
+        return Sizeless(len(data)) if len(attempts) == 2 else Answer(len(data))
+
+    monkeypatch.setattr(builder.urllib.request, "urlopen", flaky)
+    assert builder.main(["scan", work, "--url", "https://example.com/island.tgz"]) == 0
+    err = capsys.readouterr().err
+    assert len(attempts) == 3 and "timed out" in err and "did not say how large" in err
 
 
 def test_the_builder_says_what_each_spacing_of_points_costs(tmp_path, capsys):
