@@ -175,13 +175,15 @@ class IndexedStore(ua.Store):
                 "%s: reading %d file%s of %s through its index"
                 % (self.http.name, len(wanted), "" if len(wanted) == 1 else "s", self.tar.what)
             )
-            self.fetched += mi.read(
+            fetched = mi.read(
                 lambda start, end: self.http.range(self.tar.url, start, end, self.tar.what),
                 self.index.points,
                 self.index.members,
                 [self.prefix + path for path in wanted],
                 self._sink,
             )
+            self.fetched += fetched
+            ua.warn("%s: read %.1f MB of %s" % (self.http.name, fetched / 1e6, self.tar.what))
         except mi.Mismatch as e:
             ua.warn("%s: %s; reading the whole archive, once, instead" % (self.http.name, e))
             self.whole = True
